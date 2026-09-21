@@ -1,0 +1,675 @@
+# ============================================================
+# TAA Institutional API v2 - OpenAPI 3.1.0 Specification
+# Generated: 2026-09-21T13:48:57.125Z
+# Source: OPENAPI_ENDPOINTS in index.html
+# Maintainers: 把 OPENAPI_ENDPOINTS 改動後,執行 npm run gen:openapi 同步本檔
+# ============================================================
+
+openapi: 3.1.0
+
+info:
+  title: TAA Institutional API
+  version: 2.0.0
+  summary: 機構級戰術資產配置 (TAA) 決策 API
+  description: |
+    機構級 TAA API v2 規格,涵蓋 8 大 domain:market-data / fund-registry /
+    portfolio / risk / policy / decision-gate / execution / audit。
+    
+    **核心原則**
+    - 統一 URI 版本 (`/api/v2/`)
+    - 結構化錯誤碼(見 `ErrorResponse` schema 與 `x-error-codes`)
+    - 全 API 強制 `traceId` + `Idempotency-Key` (mutation 路徑)
+    - Webhook 強制 HMAC-SHA256 簽章 + nonce 重放保護
+    - Audit records 採 WORM (append-only),保留 3 年
+
+  contact:
+    name: TAA Platform Team
+    email: taa-platform@your-institution.com
+  license:
+    name: Proprietary
+    identifier: LicenseRef-internal-use-only
+
+servers:
+  - url: https://api.your-institution.com/api/v2
+    description: Production
+  - url: https://api-staging.your-institution.com/api/v2
+    description: Staging
+
+tags:
+  - name: decision-gate
+    description: 決策閘門(模型一致性 / 風險 / 合規 / 交易可行性)
+  - name: risk
+    description: 風控(pre-trade / post-trade)
+  - name: policy
+    description: Policy-as-Code(YAML 規則驗證與發佈)
+  - name: execution
+    description: 交易執行(Playbook / 下單)
+  - name: audit
+    description: 審計紀錄(WORM)
+  - name: market-data
+    description: 行情與宏觀數據
+  - name: webhooks
+    description: Webhook 訂閱管理
+  - name: error-codes
+    description: 統一錯誤碼字典(展示用,見 components.x-error-codes)
+
+paths:
+  /api/v2/decision-gates/evaluate:
+    post:
+      operationId: op_0
+      summary: 4 步決策閘門評估
+      description: |
+        提交一組 proposal 與當前市場快照,系統依序執行模型一致性、風險預算、合規、交易可行性 4 步閘門,回傳每步 pass/warn/fail + 阻斷條款 + 建議修正。
+      tags:
+        - post
+      security:
+        - OAuth2: [taa.read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericRequest"
+            example:
+              {"proposalId":"prop_20260921_001","portfolioId":"PF-INST-A","weights":{"K007":0.15,"E018":0.18},"marketSnapshotId":"snap_20260921_0930","policyVersion":"v1.8.3","idempotencyKey":"idem_xyz_001"}
+      responses:
+        "200":
+          description: "4 步全部通過 → 可執行調倉"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "207":
+          description: "POLICY_PARTIAL_BLOCK · 部分通過,需人工覆核"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "401":
+          description: "AUTH_UNAUTHORIZED · JWT 過期"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "422":
+          description: "RISK_LIMIT_BREACH · 風控上限違反"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v2/decision-gates/result/{traceId}:
+    get:
+      operationId: op_1
+      summary: 查詢歷史決策結果
+      description: |
+        根據 traceId 取得完整審計證據鏈(modelVersion / policyDigest / decisionHash / featureSnapshotId)。WORM 儲存,保留 3 年。
+      tags:
+        - get
+      security:
+        - OAuth2: [taa.read]
+      responses:
+        "200":
+          description: "查詢成功"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "404":
+          description: "NOT_FOUND · traceId 不存在或已過保留期"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v2/risk/pretrade-check:
+    post:
+      operationId: op_2
+      summary: 交易前風控檢查
+      description: |
+        提交擬執行下單清單,系統返回是否允許執行、CVaR/VaR 預估、集中度、限額剩餘。
+      tags:
+        - post
+      security:
+        - OAuth2: [taa.read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericRequest"
+            example:
+              {"orders":[{"isin":"LU099","side":"BUY","qty":1000}],"portfolioId":"PF-INST-A"}
+      responses:
+        "200":
+          description: "allow=true → 可下單"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "422":
+          description: "RISK_LIMIT_BREACH · 超限 → allow=false,含阻斷條款"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v2/risk/posttrade-attribution:
+    post:
+      operationId: op_3
+      summary: 交易後歸因分析
+      description: |
+        提交已成交訂單,返回滑點、衝擊成本、與基準偏離歸因(因子分解)。
+      tags:
+        - post
+      security:
+        - OAuth2: [taa.read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericRequest"
+            example:
+              {"executedOrders":[{"isin":"LU099","execPrice":123.45}],"benchmark":"vwap_5min"}
+      responses:
+        "200":
+          description: "歸因完成"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v2/policy/validate-yaml:
+    post:
+      operationId: op_4
+      summary: 驗證 Policy YAML 規則
+      description: |
+        提交 YAML 規則文本,返回結構化驗證結果(JSON Schema + 邏輯衝突檢測)。
+      tags:
+        - post
+      security:
+        - OAuth2: [taa.read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericRequest"
+            example:
+              {"yamlText":"level: 1\n  trigger: {vix: {gt: 20}}\n  action: alert","dryRun":true}
+      responses:
+        "200":
+          description: "valid=true / false 皆回傳 200,需看 errors 陣列"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "409":
+          description: "POLICY_CONFLICT · 同 priority 多條規則命中"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v2/execution/playbook/step:
+    post:
+      operationId: op_5
+      summary: 執行 Playbook 單步(支援 Idempotency)
+      description: |
+        執行 Bear Case Playbook 的 T+0 / T+1 / T+2 單步。**強制** Idempotency-Key header,重送同 key 返回快取結果。
+      tags:
+        - post
+      security:
+        - OAuth2: [taa.read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericRequest"
+            example:
+              # raw:"// Headers:\n\"Idempotency-Key\": \"idem_xyz_001\"\n\"X-Actor\": \"pm.lin@inst.com\"\n\n{\n  \"playbookId\": \"bear_case_v1\",\n  \"step\": \"T+0\",\n  \"params\": {\"reduceRatio\":0.05}\n}"
+      responses:
+        "200":
+          description: "執行成功 / cached replay"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "422":
+          description: "EXEC_ORDER_REJECTED · 券商拒單"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "409":
+          description: "EXEC_SLIPPAGE_EXCEEDED · 滑點超限"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v2/audit/records/{traceId}:
+    get:
+      operationId: op_6
+      summary: WORM 審計紀錄查詢
+      description: |
+        append-only 不可變儲存,保留 3 年,支援合規追溯。回傳完整 evidence chain 與 payload 快照。
+      tags:
+        - get
+      security:
+        - OAuth2: [taa.read]
+      responses:
+        "200":
+          description: "查詢成功(append-only)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v2/market-data/snapshot:
+    get:
+      operationId: op_7
+      summary: 市場數據快照(VIX/DXY/US10Y/...)
+      description: |
+        低延遲 < 100ms 行情,支援 WebSocket 訂閱(`/ws/market-data`)。
+      tags:
+        - get
+      security:
+        - OAuth2: [taa.read]
+      responses:
+        "200":
+          description: "快照成功"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "503":
+          description: "DATA_STALE_SNAPSHOT · 來源延遲 > 5min"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v2/webhooks/test:
+    post:
+      operationId: op_8
+      summary: Webhook 端點測試
+      description: |
+        註冊 webhook URL,系統會用 HMAC-SHA256 簽章推送測試事件(用於驗證簽章鏈路)。
+      tags:
+        - post
+      security:
+        - OAuth2: [taa.read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenericRequest"
+            example:
+              {"url":"https://your-host/hook","events":["trigger.l1","gate.fail"],"secret":"whsec_..."}
+      responses:
+        "200":
+          description: "測試事件已送出"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      description: |
+        OAuth2 Client Credentials flow。所有 mutation 路徑需 scope `taa.execute`;
+        審計查詢需 `taa.audit`;其餘唯讀路徑只需 `taa.read`。
+      flows:
+        clientCredentials:
+          tokenUrl: /oauth/token
+          refreshUrl: /oauth/refresh
+          scopes:
+            taa.read: 讀取 TAA 狀態/報表
+            taa.execute: 觸發決策閘門 / 執行 Playbook
+            taa.audit: 讀取審計紀錄(合規與稽核)
+            taa.admin: Policy 註冊 / 模型上線
+    HmacWebhook:
+      type: apiKey
+      in: header
+      name: X-Webhook-Signature
+      description: Webhook 接收端驗證用 HMAC-SHA256 簽章(值為 `sha256=<hex>`)
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        防止重送攻擊 / 網路重試導致重複執行。
+        格式:`idem_<trace-or-uuid>`,系統快取 24h。
+        重送同 key 在快取有效期內會返回原始結果(`X-Idempotent-Replay: true`)。
+      schema:
+        type: string
+        pattern: "^idem_[a-zA-Z0-9_-]{6,64}$"
+        example: "idem_trc_20260921_0001"
+    TraceId:
+      name: X-Trace-Id
+      in: header
+      required: false
+      description: 用戶端提供的 trace ID(若無則由系統產生)
+      schema:
+        type: string
+        pattern: "^trc_[0-9]{8}_[0-9]{4,}$"
+
+  responses:
+    Unauthorized:
+      description: AUTH_UNAUTHORIZED · JWT 過期 / 缺失 / 簽章錯誤
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            traceId: "trc_20260921_0001"
+            code: "AUTH_UNAUTHORIZED"
+            message: "JWT expired"
+            retryable: false
+    Forbidden:
+      description: AUTH_FORBIDDEN_ROLE · RBAC 拒絕
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: 速率限制(429);遵守 Retry-After header
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: 500 內部錯誤;所有 5xx 都帶 traceId,可由 `GET /api/v2/audit/records/{traceId}` 復盤
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [traceId, code, message, retryable]
+      description: |
+        統一錯誤回應格式(RFC 7807 inspired)。
+        `code` 前綴分類見 `x-error-codes`。
+      properties:
+        traceId:
+          type: string
+          description: 對應決策閘門或 API 呼叫的 trace ID,用於審計復盤
+          example: "trc_20260921_0001"
+        code:
+          type: string
+          description: 結構化錯誤碼(見 components.x-error-codes)
+          example: "RISK_LIMIT_BREACH"
+        message:
+          type: string
+          description: 人類可讀錯誤描述
+        details:
+          type: object
+          description: 額外結構化資訊(指標值、上限、衝突路徑等)
+          additionalProperties: true
+        retryable:
+          type: boolean
+          description: 是否可安全重試(idempotent endpoint 已 replay 不算重試)
+        timestamp:
+          type: string
+          format: date-time
+      example:
+        traceId: "trc_20260921_0001"
+        code: "RISK_LIMIT_BREACH"
+        message: "CVaR 95 exceeded policy limit"
+        details:
+          metric: "CVaR95"
+          value: 0.134
+          limit: 0.12
+        retryable: false
+        timestamp: "2026-09-21T09:30:00Z"
+
+    EvidenceChain:
+      type: object
+      description: 審計證據鏈(所有決策路徑必填)
+      required: [traceId, modelVersion, policyDigest, decisionHash]
+      properties:
+        traceId: { type: string, example: "trc_20260921_0001" }
+        modelVersion: { type: string, example: "hmm-v3.2.1" }
+        policyDigest:
+          type: string
+          description: 當下生效 policy 的 SHA-256 digest
+          example: "sha256:9f4a3b2c..."
+        decisionHash:
+          type: string
+          description: 此次決策的不可變 hash
+          example: "0x7c3e9a4b..."
+        featureSnapshotId:
+          type: string
+          description: 輸入特徵快照 ID
+          example: "fs_20260921_a1b2c3"
+
+    GateResult:
+      type: object
+      required: [step, name, status]
+      properties:
+        step: { type: integer, example: 1 }
+        name: { type: string, enum: [consistency, risk, compliance, feasibility] }
+        status: { type: string, enum: [pass, warn, fail] }
+        metric:
+          type: object
+          description: 量化指標(僅 step 2 / 3 / 4 填寫)
+          additionalProperties: true
+
+    DecisionGateEvaluateRequest:
+      type: object
+      required: [proposalId, portfolioId, weights, marketSnapshotId, policyVersion]
+      properties:
+        proposalId: { type: string }
+        portfolioId: { type: string }
+        weights:
+          type: object
+          additionalProperties: { type: number, minimum: 0, maximum: 1 }
+        marketSnapshotId: { type: string }
+        policyVersion: { type: string }
+
+    DecisionGateEvaluateResponse:
+      type: object
+      required: [traceId, gates, allPassed]
+      properties:
+        traceId: { type: string }
+        gates:
+          type: array
+          items: { $ref: "#/components/schemas/GateResult" }
+        allPassed: { type: boolean }
+        decisionHash: { type: string }
+
+    AuditRecord:
+      type: object
+      description: WORM 不可變審計紀錄
+      required: [traceId, requestHash, responseHash, modelVersion, policyDigest, signedAt]
+      properties:
+        traceId: { type: string }
+        requestHash: { type: string }
+        responseHash: { type: string }
+        modelVersion: { type: string }
+        policyDigest: { type: string }
+        featureSnapshotId: { type: string }
+        actor:
+          type: string
+          description: 觸發者(來自 JWT `sub` claim)
+        approvedBy:
+          type: string
+          description: 人工覆核者(若經 4 步閘門後需覆核)
+        signedAt: { type: string, format: date-time }
+
+    GenericRequest:
+      type: object
+      additionalProperties: true
+
+    GenericResponse:
+      type: object
+      additionalProperties: true
+
+    MarketDataSnapshot:
+      type: object
+      required: [snapshotId, asOf, data]
+      properties:
+        snapshotId: { type: string }
+        asOf: { type: string, format: date-time }
+        data:
+          type: object
+          description: 指標值 map
+          additionalProperties: { type: number }
+          example:
+            VIX: 19.12
+            DXY: 103.45
+            US10Y: 4.234
+            GOLD: 2654.30
+
+  # ---------- x-error-codes: 標準錯誤碼字典(v9.1)----------
+  x-error-codes:
+    description: 統一錯誤碼字典,前端 / 監控 / CI 應依此分流。
+    categories:
+      - prefix: AUTH_
+        meaning: 身份 / 權限
+        retryable: false
+        codes:
+          - { code: AUTH_UNAUTHORIZED, http: 401, desc: "JWT 過期 / 缺失 / 簽章錯誤" }
+          - { code: AUTH_FORBIDDEN_ROLE, http: 403, desc: "RBAC 拒絕(投顧 ≠ 風控 ≠ 審計)" }
+      - prefix: DATA_
+        meaning: 資料
+        retryable: true
+        codes:
+          - { code: DATA_STALE_SNAPSHOT, http: 503, desc: "資料新鮮度 > 5 分鐘" }
+          - { code: DATA_SOURCE_MISMATCH, http: 503, desc: "兩個來源數據不一致" }
+      - prefix: MODEL_
+        meaning: 模型
+        retryable: false
+        codes:
+          - { code: MODEL_DRIFT_DETECTED, http: 409, desc: "模型漂移超閾值,自動降權" }
+          - { code: MODEL_VERSION_INCOMPAT, http: 409, desc: "模型版本與 policy 不匹配" }
+      - prefix: RISK_
+        meaning: 風控
+        retryable: false
+        codes:
+          - { code: RISK_LIMIT_BREACH, http: 422, desc: "CVaR / VaR / 集中度超限" }
+          - { code: RISK_LIMIT_NEAR, http: 200, desc: "接近上限 85%(降權提示)" }
+      - prefix: POLICY_
+        meaning: 政策
+        retryable: false
+        codes:
+          - { code: POLICY_CONFLICT, http: 409, desc: "規則衝突(同 priority 多條命中)" }
+          - { code: POLICY_PARTIAL_BLOCK, http: 207, desc: "4 步閘門部分通過,需人工覆核" }
+      - prefix: EXEC_
+        meaning: 執行
+        retryable: varies
+        codes:
+          - { code: EXEC_ORDER_REJECTED, http: 422, desc: "券商 / 交易所拒單" }
+          - { code: EXEC_SLIPPAGE_EXCEEDED, http: 422, desc: "滑點超 TCA 上限" }
+          - { code: EXEC_IDEMPOTENT_REPLAY, http: 200, desc: "同 idempotency-key 重送(無副作用)" }
+
+  # ---------- x-slo-targets(服務水準目標)----------
+  x-slo-targets:
+    description: 全域 SLO 與錯誤預算
+    targets:
+      - { metric: availability_30d, target: "99.95%", error_budget_monthly: "~22min" }
+      - { metric: p95_latency_ms, target: "< 350ms", scope: "non-streaming" }
+      - { metric: data_freshness_s, target: "< 300s" }
+      - { metric: retry_rate_24h, target: "< 2%", note: "主要由 idempotent replay 構成" }
+
+  # ---------- x-webhook-spec(Webhook 簽章與重放保護)----------
+  x-webhook-spec:
+    description: |
+      所有 webhook 接收端必須驗證以下 headers,缺一視為無效。
+    signing:
+      algorithm: HMAC-SHA256
+      header: X-Webhook-Signature
+      format: "sha256=<64-char hex>"
+      signing_string: "${timestamp}.${nonce}.${raw_payload}"
+    required_headers:
+      - X-Webhook-Id
+      - X-Webhook-Timestamp
+      - X-Webhook-Nonce
+      - X-Webhook-Signature
+      - X-Webhook-Event
+    replay_protection:
+      nonce_cache_ttl_seconds: 600
+      timestamp_skew_tolerance_seconds: 300

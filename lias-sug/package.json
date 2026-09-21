@@ -1,0 +1,26 @@
+{
+  "name": "taa-v9-upgrade",
+  "version": "9.1.0",
+  "description": "TAA Institutional Dashboard v9.1 - Evidence Chain + OpenAPI v2 + Hardening Toolbox",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/api-utils.test.js tests/openapi-schema.test.js",
+    "test:api-utils": "node --test tests/api-utils.test.js",
+    "test:openapi": "node --test tests/openapi-schema.test.js",
+    "gen:openapi": "node scripts/generate-openapi.js",
+    "verify:yaml": "node -e \"const y=require('js-yaml');const f=require('fs');const d=y.load(f.readFileSync('openapi.yaml','utf-8'));console.log('✓ YAML valid · ' + Object.keys(d.paths).length + ' paths · ' + Object.keys(d.components.schemas).length + ' schemas')\""
+  },
+  "keywords": [
+    "taa",
+    "institutional-api",
+    "openapi",
+    "evidence-chain",
+    "governance"
+  ],
+  "devDependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
